@@ -14,6 +14,7 @@
 #include "fat.h"
 #include "dos.h"
 
+//Conor Oliver, Connor Van Cleave, Matt Condit
 
 void usage(char *progname) {
     fprintf(stderr, "usage: %s <imagename>\n", progname);
