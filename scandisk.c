@@ -226,6 +226,7 @@ void follow_dir(uint16_t cluster, int indent, uint8_t *image_buf, struct bpb33* 
 			uint16_t followclust = print_dirent(dirent, 0, image_buf, bpb, refcount);		//changed to print as follow_dir is called	
 			
             if (followclust)
+				refcount[followclust]++;
                 follow_dir(followclust, indent+1, image_buf, bpb, refcount);
             dirent++;
 	}
@@ -240,7 +241,7 @@ void follow_dir(uint16_t cluster, int indent, uint8_t *image_buf, struct bpb33* 
 // will walk through the FAT updating refcounts, and checking for errors
 // [maybe even one day it will fix them]
 
-void check_refcount(uint8_t *image_buf, struct bpb33* bpb, int *refcount)
+void checkandfix(uint8_t *image_buf, struct bpb33* bpb, int *refcount)
 {
 	uint16_t cluster = 0;
 	struct direntry *dirent = (struct direntry*)cluster_to_addr(cluster, image_buf, bpb);
@@ -256,12 +257,32 @@ void check_refcount(uint8_t *image_buf, struct bpb33* bpb, int *refcount)
 		{
 			refcount[followclust]++; //updating refcount for index of current cluster
 			printf("refcount is: %d, followclust is: %d\n\n",  refcount[followclust], followclust);
-			if(refcount[followclust] >1)
-			{
-				printf("%s%d\n", "ERROR AT CURRENT CLUSTER:   ", followclust);
-			}
         	follow_dir(followclust, 0, image_buf, bpb, refcount);
         }
+
+
+		//this is where the magic happens...or in print_dirent? I'd rather do 
+		// it here
+		
+		
+		int chain = 0;
+        
+		uint16_t curr_cluster = getushort(dirent->deStartCluster);
+		uint16_t next = curr_cluster;
+        
+        uint16_t previous;
+
+        while(is_valid_cluster(next,bpb)){
+            refcount[next]++;
+			if(refcount[next] > 1) //problem
+			{
+				printf("ERROR REFCOUNT > 1 FOR:  %d, refcount = %d\n", next, refcount[next]);  
+			}
+			next = get_fat_entry(next,image_buf, bpb);
+		}
+
+
+
 
         dirent++;
     }
@@ -305,7 +326,7 @@ int main(int argc, char** argv) {
 
 	//where we run dope functions
 	printf("\n");
-	check_refcount(image_buf, bpb, refcount);
+	checkandfix(image_buf, bpb, refcount);
 
 	
 	
