@@ -204,6 +204,78 @@ uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, s
                hidden?'h':' ', 
                sys?'s':' ', 
                arch?'a':' ');
+
+		
+		int cluster_count = 0;
+        
+		uint16_t curr_cluster = getushort(dirent->deStartCluster);
+		uint16_t original_cluster = curr_cluster;
+        
+        uint16_t previous;
+
+        while(is_valid_cluster(curr_cluster,bpb))
+		{
+            refcount[curr_cluster]++;
+			if(refcount[curr_cluster] > 1) //problem
+			{
+				printf("ERROR REFCOUNT > 1 FOR:  %d, refcount = %d\n", curr_cluster, refcount[curr_cluster]);  
+				dirent->deName[0] = SLOT_DELETED;
+				refcount[curr_cluster]--;
+			}
+
+			previous = curr_cluster;
+			curr_cluster = get_fat_entry(curr_cluster, image_buf, bpb);
+			if(previous == curr_cluster) //points to itself
+			{
+				printf("ERROR POINTS TO SELF\n");
+				set_fat_entry(curr_cluster, FAT12_MASK & CLUST_EOFS, image_buf, bpb);
+				cluster_count++;
+				break;
+			}
+			if(curr_cluster == (FAT12_MASK & CLUST_BAD))
+			{
+				printf("BAD CLUSTER\n");
+				set_fat_entry(curr_cluster, FAT12_MASK & CLUST_FREE, image_buf, bpb);
+				set_fat_entry(previous, FAT12_MASK & CLUST_EOFS, image_buf, bpb);
+				break;
+			}
+			cluster_count++;
+			int clusters = 0;
+			if(size%512 == 0)
+			{
+				clusters = size/512;
+			}
+			else
+			{
+				clusters = (size/512)+1;
+			}
+			printf("cluster_count = %d\n", cluster_count);
+			printf("clusters = %d\n", clusters);
+			if(clusters < cluster_count)
+			{
+				printf("ERROR: FILE SIZE TOO SMALL FOR NUM CLUSTERS\n");
+				curr_cluster = get_fat_entry(original_cluster+clusters - 1, image_buf, bpb);
+				while(is_valid_cluster(curr_cluster, bpb))
+				{
+					previous = curr_cluster;
+					set_fat_entry(previous, FAT12_MASK & CLUST_FREE, image_buf, bpb);
+					curr_cluster = get_fat_entry(curr_cluster, image_buf, bpb);
+				}
+				set_fat_entry(original_cluster +clusters -1, FAT12_MASK &CLUST_EOFS, image_buf, bpb);
+			}
+			else if(clusters > cluster_count)
+			{
+				printf("ERROR: FILE SIZE TOO LARGE FOR NUM CLUSTERS\n");
+				uint32_t correct_size = cluster_count * bpb->bpbBytesPerSec;
+				putulong(dirent->deFileSize, correct_size);
+			}
+			
+							
+
+	
+		}
+		
+
     }
 
     return followclust;
@@ -223,11 +295,13 @@ void follow_dir(uint16_t cluster, int indent, uint8_t *image_buf, struct bpb33* 
 	{
            // char buffer[MAXFILENAME]; 
            // uint16_t followclust = get_dirent(dirent, buffer);
-			uint16_t followclust = print_dirent(dirent, 0, image_buf, bpb, refcount);		//changed to print as follow_dir is called	
+			uint16_t followclust = print_dirent(dirent, indent, image_buf, bpb, refcount);		//changed to print as follow_dir is called	
 			
             if (followclust)
+			{
 				refcount[followclust]++;
                 follow_dir(followclust, indent+1, image_buf, bpb, refcount);
+			}
             dirent++;
 	}
 
@@ -257,7 +331,7 @@ void checkandfix(uint8_t *image_buf, struct bpb33* bpb, int *refcount)
 		{
 			refcount[followclust]++; //updating refcount for index of current cluster
 			printf("refcount is: %d, followclust is: %d\n\n",  refcount[followclust], followclust);
-        	follow_dir(followclust, 0, image_buf, bpb, refcount);
+        	follow_dir(followclust, 1, image_buf, bpb, refcount);
         }
 
 
@@ -265,24 +339,6 @@ void checkandfix(uint8_t *image_buf, struct bpb33* bpb, int *refcount)
 		// it here
 		
 		
-		int chain = 0;
-        
-		uint16_t curr_cluster = getushort(dirent->deStartCluster);
-		uint16_t next = curr_cluster;
-        
-        uint16_t previous;
-
-        while(is_valid_cluster(next,bpb)){
-            refcount[next]++;
-			if(refcount[next] > 1) //problem
-			{
-				printf("ERROR REFCOUNT > 1 FOR:  %d, refcount = %d\n", next, refcount[next]);  
-			}
-			next = get_fat_entry(next,image_buf, bpb);
-		}
-
-
-
 
         dirent++;
     }
