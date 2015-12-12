@@ -22,6 +22,101 @@ void usage(char *progname) {
     exit(1);
 }
 
+/* write the values into a directory entry */
+void write_dirent(struct direntry *dirent, char *filename, uint16_t start_cluster, uint32_t size)
+{
+    char *p, *p2;
+    char *uppername;
+    int len, i;
+
+    /* clean out anything old that used to be here */
+    memset(dirent, 0, sizeof(struct direntry));
+
+    /* extract just the filename part */
+    uppername = strdup(filename);
+    p2 = uppername;
+    for (i = 0; i < strlen(filename); i++) 
+    {
+	if (p2[i] == '/' || p2[i] == '\\') 
+	{
+	    uppername = p2+i+1;
+	}
+    }
+
+    /* convert filename to upper case */
+    for (i = 0; i < strlen(uppername); i++) 
+    {
+	uppername[i] = toupper(uppername[i]);
+    }
+
+    /* set the file name and extension */
+    memset(dirent->deName, ' ', 8);
+    p = strchr(uppername, '.');
+    memcpy(dirent->deExtension, "___", 3);
+    if (p == NULL) 
+    {
+	fprintf(stderr, "No filename extension given - defaulting to .___\n");
+    }
+    else 
+    {
+	*p = '\0';
+	p++;
+	len = strlen(p);
+	if (len > 3) len = 3;
+	memcpy(dirent->deExtension, p, len);
+    }
+
+    if (strlen(uppername)>8) 
+    {
+	uppername[8]='\0';
+    }
+    memcpy(dirent->deName, uppername, strlen(uppername));
+    free(p2);
+
+    /* set the attributes and file size */
+    dirent->deAttributes = ATTR_NORMAL;
+    putushort(dirent->deStartCluster, start_cluster);
+    putulong(dirent->deFileSize, size);
+
+    /* could also set time and date here if we really
+       cared... */
+}
+
+
+/* create_dirent finds a free slot in the directory, and write the
+   directory entry */
+
+void create_dirent(struct direntry *dirent, char *filename, 
+		   uint16_t start_cluster, uint32_t size,
+		   uint8_t *image_buf, struct bpb33* bpb)
+{
+    while (1) 
+    {
+	if (dirent->deName[0] == SLOT_EMPTY) 
+	{
+	    /* we found an empty slot at the end of the directory */
+	    write_dirent(dirent, filename, start_cluster, size);
+	    dirent++;
+
+	    /* make sure the next dirent is set to be empty, just in
+	       case it wasn't before */
+	    memset((uint8_t*)dirent, 0, sizeof(struct direntry));
+	    dirent->deName[0] = SLOT_EMPTY;
+	    return;
+	}
+
+	if (dirent->deName[0] == SLOT_DELETED) 
+	{
+	    /* we found a deleted entry - we can just overwrite it */
+	    write_dirent(dirent, filename, start_cluster, size);
+	    return;
+	}
+	dirent++;
+    }
+}
+
+
+
 /************PRINT_INDENT***************/
 void print_indent(int indent)
 {
@@ -240,38 +335,36 @@ uint16_t print_dirent(struct direntry *dirent, int indent, uint8_t *image_buf, s
 				break;
 			}
 			cluster_count++;
-			int clusters = 0;
-			if(size%512 == 0)
+		}
+		
+		int clusters = 0;
+		if(size%512 == 0)
+		{
+			clusters = size/512;
+		}
+		else
+		{
+			clusters = (size/512)+1;
+		}
+		if(clusters < cluster_count)
+		{
+			printf("ERROR: FILE SIZE TOO SMALL FOR NUM CLUSTERS\n");
+			curr_cluster = get_fat_entry(original_cluster+clusters - 1, image_buf, bpb);
+			printf("FIXED \n");
+			while(is_valid_cluster(curr_cluster, bpb))
 			{
-				clusters = size/512;
+				previous = curr_cluster;
+				set_fat_entry(previous, FAT12_MASK & CLUST_FREE, image_buf, bpb);
+				curr_cluster = get_fat_entry(curr_cluster, image_buf, bpb);
 			}
-			else
-				{clusters = (size/512)+1;
+			set_fat_entry(original_cluster +clusters -1, FAT12_MASK &CLUST_EOFS, image_buf, bpb);
 			}
-			printf("cluster_count = %d\n", cluster_count);
-			printf("clusters = %d\n", clusters);
-			if(clusters < cluster_count)
-			{
-				printf("ERROR: FILE SIZE TOO SMALL FOR NUM CLUSTERS\n");
-				curr_cluster = get_fat_entry(original_cluster+clusters - 1, image_buf, bpb);
-				while(is_valid_cluster(curr_cluster, bpb))
-				{
-					previous = curr_cluster;
-					set_fat_entry(previous, FAT12_MASK & CLUST_FREE, image_buf, bpb);
-					curr_cluster = get_fat_entry(curr_cluster, image_buf, bpb);
-				}
-				set_fat_entry(original_cluster +clusters -1, FAT12_MASK &CLUST_EOFS, image_buf, bpb);
-			}
-			else if(clusters > cluster_count)
-			{
-				printf("ERROR: FILE SIZE TOO LARGE FOR NUM CLUSTERS\n");
-				uint32_t correct_size = cluster_count * bpb->bpbBytesPerSec;
-				putulong(dirent->deFileSize, correct_size);
-			}
-			
-							
-
-	
+		else if(clusters > cluster_count)
+		{
+			printf("ERROR: FILE SIZE TOO LARGE FOR NUM CLUSTERS\n");
+			uint32_t correct_size = cluster_count * bpb->bpbBytesPerSec;
+			putulong(dirent->deFileSize, correct_size);
+			printf("FIXED \n");
 		}
 		
 
@@ -308,6 +401,62 @@ void follow_dir(uint16_t cluster, int indent, uint8_t *image_buf, struct bpb33* 
     }
 }
 
+/***********SAVE_ORPHANS***************/
+void orphan_search(uint8_t *image_buf, struct bpb33* bpb, int * refcount, int FATsz) {
+	int count = 0; //count orphans
+	int i = 2;
+	for(; i < FATsz; i++)
+	{
+		uint16_t cluster = get_fat_entry(i, image_buf, bpb);
+		if(cluster != (FAT12_MASK & CLUST_FREE) && cluster != (FAT12_MASK & CLUST_BAD) && refcount[i] == 0) 
+		{
+			printf("FOUND AN ORPHAN, CLUSTER # = %d\n", i);
+			count++;
+			int orphan_size = 1;
+			refcount[i] = 1;
+			uint16_t orphan_cluster = cluster;
+		
+			while(is_valid_cluster(orphan_cluster, bpb)) 
+			{
+				if (refcount[orphan_cluster] == 1)
+				{
+					set_fat_entry(orphan_cluster, (FAT12_MASK & CLUST_EOFS), image_buf, bpb);
+				}
+				else if(refcount[orphan_cluster] > 1)
+				{
+					struct direntry *dirent = (struct direntry*)cluster_to_addr(cluster, image_buf, bpb);
+					dirent->deName[0] = SLOT_DELETED;
+					refcount[orphan_cluster]--;
+					printf("DELETED\n");
+				}
+				else if(refcount[orphan_cluster] < 1)
+				{
+					refcount[orphan_cluster]++;
+				}
+			orphan_cluster = get_fat_entry(orphan_cluster, image_buf, bpb);
+			orphan_size++;
+			}
+			//got to concatanate stuff
+			struct direntry *dirent = (struct direntry*)root_dir_addr(image_buf, bpb);
+			char name[5];
+			sprintf(name, "%d", count);
+			char str[1024] = "";
+			strcat(str, "located");
+			strcat(str, name);
+			strcat(str, ".dat\0");
+			char * file_name = str;
+			create_dirent(dirent, file_name, i, orphan_size * 512, image_buf, bpb);
+			printf("added %s to directory \n", str);
+			printf("orphan cluster chain size = %d \n", orphan_size);
+		}
+	}
+	printf("orphans saved: %d\n", count);
+}
+		
+
+
+
+
 /***********CHECK_REFCOUNT***************/
 //This function traverses the root directory looking for errors. It takes
 // the image buffer, bpb, and a pointer to the array refcount. The function 
@@ -332,6 +481,7 @@ void checkandfix(uint8_t *image_buf, struct bpb33* bpb, int *refcount)
 			printf("refcount is: %d, followclust is: %d\n\n",  refcount[followclust], followclust);
         	follow_dir(followclust, 1, image_buf, bpb, refcount);
         }
+		
 
 
 		//this is where the magic happens...or in print_dirent? I'd rather do 
@@ -379,11 +529,14 @@ int main(int argc, char** argv) {
         dirent++;
     }*/
 
+
+
 	//where we run dope functions
 	printf("\n");
 	checkandfix(image_buf, bpb, refcount);
+	orphan_search(image_buf, bpb, refcount, FATsz);
 
-	
+	free(refcount);
 	
 
 
